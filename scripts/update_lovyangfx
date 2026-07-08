@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: scripts/update_lovyangfx <tag>" >&2
+  exit 1
+fi
+
+tag="$1"
+repo_url="https://github.com/lovyan03/LovyanGFX.git"
+vendor_dir="c_src/vendor/lovyangfx"
+tmpdir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$tmpdir"
+}
+
+trap cleanup EXIT
+
+echo "Cloning LovyanGFX ${tag} into a temporary directory..."
+git clone --depth 1 --branch "$tag" "$repo_url" "$tmpdir/repo"
+
+rm -rf "$tmpdir/repo/.git"
+
+echo "Replacing ${vendor_dir}..."
+rm -rf "$vendor_dir"
+mkdir -p "$(dirname "$vendor_dir")"
+cp -a "$tmpdir/repo/." "$vendor_dir"
+
+echo "Updated vendored LovyanGFX to ${tag}."
+echo "Next steps:"
+echo "  1. review the diff under ${vendor_dir}"
+echo "  2. run mix compile"
+echo "  3. update pinned-version references if needed"

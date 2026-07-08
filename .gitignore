@@ -1,0 +1,19 @@
+# Mix / Elixir build outputs
+/_build/
+/cover/
+/deps/
+/doc/
+/erl_crash.dump
+
+# BEAM and native artifacts
+*.ez
+*.beam
+*.so
+
+# Generated NIF outputs
+/priv/*.so
+/priv/.lovyangfx_nif.toolchain
+
+# Local LovyanGFX source checkouts
+/c_src/LovyanGFX/
+/c_src/vendor/
