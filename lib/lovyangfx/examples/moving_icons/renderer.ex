@@ -31,4 +31,10 @@ defmodule LovyanGFX.Examples.MovingIcons.Renderer do
 
     {:noreply, state}
   end
+
+  @impl true
+  def terminate(_reason, _state) do
+    LovyanGFX.Examples.MovingIcons.stop()
+    :ok
+  end
 end

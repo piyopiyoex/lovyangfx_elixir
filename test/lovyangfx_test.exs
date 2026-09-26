@@ -40,6 +40,29 @@ defmodule LovyanGFXTest do
              LovyanGFX.start(width: 320, height: 240, framebuffer: "/tmp/fb1")
   end
 
+  test "start/1 passes opt-in buffered framebuffer options through to the backend" do
+    expect(LovyanGFX.MockBackend, :start, fn opts ->
+      assert opts == [
+               width: 854,
+               height: 480,
+               framebuffer: "/dev/fb0",
+               framebuffer_mode: :buffered_rgb565,
+               swap_bytes: true
+             ]
+
+      :ok
+    end)
+
+    assert :ok =
+             LovyanGFX.start(
+               width: 854,
+               height: 480,
+               framebuffer: "/dev/fb0",
+               framebuffer_mode: :buffered_rgb565,
+               swap_bytes: true
+             )
+  end
+
   test "start/1 rejects invalid options before reaching the backend" do
     assert {:error, :invalid_options} = LovyanGFX.start(%{width: 800})
     assert {:error, {:invalid_option, :width, 0}} = LovyanGFX.start(width: 0)
@@ -66,7 +89,6 @@ defmodule LovyanGFXTest do
              LovyanGFX.render([{:fill_screen, :not_a_color}])
   end
 
-
   test "render/1 preserves image file commands for backend handling" do
     path = Path.join(System.tmp_dir!(), "lovyangfx_render_test.png")
 
@@ -76,6 +98,35 @@ defmodule LovyanGFXTest do
     end)
 
     assert :ok = LovyanGFX.render([{:draw_png_file, path, 12, 34}])
+  end
+
+  test "MovingIcons.start/1 passes buffered framebuffer options through to the backend" do
+    expect(LovyanGFX.MockBackend, :moving_icons_start, fn opts ->
+      assert opts == [
+               width: 854,
+               height: 480,
+               framebuffer: "/dev/fb0",
+               framebuffer_mode: :buffered_rgb565,
+               swap_bytes: true
+             ]
+
+      :ok
+    end)
+
+    assert :ok =
+             LovyanGFX.Examples.MovingIcons.start(
+               width: 854,
+               height: 480,
+               framebuffer: "/dev/fb0",
+               framebuffer_mode: :buffered_rgb565,
+               swap_bytes: true
+             )
+  end
+
+  test "MovingIcons.stop/0 delegates when the backend supports stop" do
+    expect(LovyanGFX.MockBackend, :moving_icons_stop, fn -> :ok end)
+
+    assert :ok = LovyanGFX.Examples.MovingIcons.stop()
   end
 
   test "timings/0 delegates to the moving icons backend" do

@@ -62,6 +62,9 @@ defmodule LovyanGFX.NullBackendTest do
            } = LovyanGFX.NullBackend.state()
 
     assert %{backend: :null, started?: true} = LovyanGFX.NullBackend.moving_icons_timings()
+
+    assert :ok = LovyanGFX.NullBackend.moving_icons_stop()
+    assert %{moving_icons_started?: false} = LovyanGFX.NullBackend.state()
   end
 
   test "public API can use the null backend" do

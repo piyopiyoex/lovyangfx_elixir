@@ -339,7 +339,6 @@ defmodule LovyanGFX.Command do
     end
   end
 
-
   defp normalize_encoded_image(operation, image_binary, x, y) do
     with :ok <- validate_non_empty_binary(image_binary),
          :ok <- validate_ints([x, y]) do
@@ -395,12 +394,14 @@ defmodule LovyanGFX.Command do
   defp validate_color_depth(depth) when depth in [1, 2, 4, 8, 16, 24], do: :ok
   defp validate_color_depth(depth), do: {:error, {:unsupported_color_depth, depth}}
 
-
   defp validate_non_empty_path(path) when is_binary(path) and byte_size(path) > 0, do: :ok
   defp validate_non_empty_path(path), do: {:error, {:expected_non_empty_path, path}}
 
   defp validate_non_empty_binary(binary) when is_binary(binary) and byte_size(binary) > 0, do: :ok
-  defp validate_non_empty_binary(binary) when is_binary(binary), do: {:error, :expected_non_empty_binary}
+
+  defp validate_non_empty_binary(binary) when is_binary(binary),
+    do: {:error, :expected_non_empty_binary}
+
   defp validate_non_empty_binary(value), do: {:error, {:expected_binary, value}}
 
   defp validate_binary_size(binary, expected_size) when is_binary(binary) do

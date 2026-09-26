@@ -8,7 +8,7 @@ NIF_SO    = $(PRIV_DIR)/lovyangfx_nif.so
 TOOLCHAIN_INFO = $(PRIV_DIR)/.lovyangfx_nif.toolchain
 
 LGFX_REPO = https://github.com/lovyan03/LovyanGFX.git
-LGFX_VERSION = 1.2.24
+LGFX_VERSION = 1.2.29
 LGFX_DIR  = c_src/vendor/lovyangfx
 LGFX_SRC  = $(LGFX_DIR)/src
 
@@ -34,8 +34,14 @@ NIF_SOURCES = c_src/lovyangfx_nif.cpp
 
 CPPFLAGS = -DLGFX_USE_V1 -DLGFX_LINUX_FB \
 	-I$(LGFX_SRC) -I$(ERTS_INCLUDE_DIR)
-CXXFLAGS += -std=c++17 -O2 -fPIC -fvisibility=hidden -Wno-deprecated-declarations
+CXXFLAGS += -std=c++17 -O2 -fPIC -fvisibility=hidden -ffunction-sections -fdata-sections -Wno-deprecated-declarations
 LDFLAGS  += -shared
+
+# GNU ld flags used by Nerves/Linux toolchains. Keep non-Linux host builds
+# source-compatible with the existing package.
+ifneq (,$(findstring linux,$(TOOLCHAIN_ID)))
+LDFLAGS  += -Wl,--gc-sections -s
+endif
 LDLIBS   += -lpthread
 
 .PHONY: all clean FORCE

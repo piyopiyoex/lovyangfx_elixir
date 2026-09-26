@@ -15,6 +15,35 @@ defmodule LovyanGFX.OptionsTest do
              )
   end
 
+  test "normalize_display/1 preserves the existing defaults and accepts buffered RGB565 options" do
+    assert {:ok, [width: 800, height: 480, framebuffer: "/dev/fb0"]} =
+             LovyanGFX.Options.normalize_display()
+
+    assert {:ok,
+            [
+              width: 854,
+              height: 480,
+              framebuffer: "/dev/fb0",
+              framebuffer_mode: :buffered_rgb565,
+              swap_bytes: true
+            ]} =
+             LovyanGFX.Options.normalize_display(
+               width: 854,
+               height: 480,
+               framebuffer: "/dev/fb0",
+               framebuffer_mode: :buffered_rgb565,
+               swap_bytes: true
+             )
+  end
+
+  test "normalize_display/1 validates framebuffer presentation options" do
+    assert {:error, {:invalid_option, :framebuffer_mode, :brain}} =
+             LovyanGFX.Options.normalize_display(framebuffer_mode: :brain)
+
+    assert {:error, {:invalid_option, :swap_bytes, 1}} =
+             LovyanGFX.Options.normalize_display(swap_bytes: 1)
+  end
+
   test "normalize_display/1 rejects non-keyword input" do
     assert {:error, :invalid_options} = LovyanGFX.Options.normalize_display(%{width: 800})
     assert {:error, :invalid_options} = LovyanGFX.Options.normalize_display([800, 480])

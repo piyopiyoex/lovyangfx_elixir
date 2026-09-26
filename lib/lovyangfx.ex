@@ -15,6 +15,12 @@ defmodule LovyanGFX do
     * `:width` - framebuffer width. Defaults to `800`.
     * `:height` - framebuffer height. Defaults to `480`.
     * `:framebuffer` - framebuffer device path. Defaults to `/dev/fb0`.
+    * `:framebuffer_mode` - presentation mode. `:direct` keeps the existing
+      `Panel_fb` behavior; `:buffered_rgb565` renders to a full-frame RGB565
+      sprite and copies it to the Linux framebuffer. Defaults to `:direct`.
+    * `:swap_bytes` - byte-swap each RGB565 pixel while presenting a buffered
+      frame. Defaults to `false`. This is intended for framebuffer devices whose
+      byte order differs from LovyanGFX's sprite buffer.
   """
   def start(opts \\ []) do
     with {:ok, normalized_opts} <- LovyanGFX.Options.normalize_display(opts) do
