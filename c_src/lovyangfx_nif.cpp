@@ -336,6 +336,19 @@ static bool get_color(ErlNifEnv* env, ERL_NIF_TERM term, uint32_t* out) {
   return true;
 }
 
+// LovyanGFX treats a plain uint32_t as RGB888. The Elixir command layer has
+// already normalized colors to RGB565, so retain that type explicitly here.
+static lgfx::rgb565_t rgb565_color(uint32_t color) {
+  return lgfx::rgb565_t(static_cast<uint16_t>(color));
+}
+
+static uint32_t rgb888_color(uint32_t color) {
+  const lgfx::rgb565_t rgb565 = rgb565_color(color);
+  return (static_cast<uint32_t>(rgb565.R8()) << 16) |
+         (static_cast<uint32_t>(rgb565.G8()) << 8) |
+         static_cast<uint32_t>(rgb565.B8());
+}
+
 static uint16_t rgb565_from_gray(uint8_t gray) {
   uint16_t r = static_cast<uint16_t>(gray >> 3);
   uint16_t g = static_cast<uint16_t>(gray >> 2);
@@ -503,7 +516,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
     if (sprite == nullptr) { *error_reason = "unknown_sprite"; return false; }
     LovyanGFX* target = screen_target();
     if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
-    sprite->pushSprite(target, x, y, color);
+    sprite->pushSprite(target, x, y, rgb565_color(color));
     return true;
   }
 
@@ -521,7 +534,8 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       LovyanGFX* target = screen_target();
       if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
       sprite->pushRotateZoom(target, static_cast<float>(dst_x), static_cast<float>(dst_y),
-                             static_cast<float>(angle), static_cast<float>(zoom_x), static_cast<float>(zoom_y), color);
+                             static_cast<float>(angle), static_cast<float>(zoom_x),
+                             static_cast<float>(zoom_y), rgb565_color(color));
     } else {
       LovyanGFX* target = screen_target();
       if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
@@ -539,7 +553,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
 
   if ((op == "fill_screen" || op == "clear") && arity == 2) {
     if (!get_color(env, tuple[1], &color)) { *error_reason = "invalid_color"; return false; }
-    target->fillScreen(color);
+    target->fillScreen(rgb565_color(color));
     return true;
   }
 
@@ -548,7 +562,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_draw_pixel";
       return false;
     }
-    target->drawPixel(x, y, color);
+    target->drawPixel(x, y, rgb565_color(color));
     return true;
   }
 
@@ -559,7 +573,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_draw_line";
       return false;
     }
-    target->drawLine(x, y, x1, y1, color);
+    target->drawLine(x, y, x1, y1, rgb565_color(color));
     return true;
   }
 
@@ -569,7 +583,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_draw_fast_hline";
       return false;
     }
-    target->drawFastHLine(x, y, w, color);
+    target->drawFastHLine(x, y, w, rgb565_color(color));
     return true;
   }
 
@@ -579,7 +593,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_draw_fast_vline";
       return false;
     }
-    target->drawFastVLine(x, y, h, color);
+    target->drawFastVLine(x, y, h, rgb565_color(color));
     return true;
   }
 
@@ -590,8 +604,8 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_rect";
       return false;
     }
-    if (op == "draw_rect") target->drawRect(x, y, w, h, color);
-    else target->fillRect(x, y, w, h, color);
+    if (op == "draw_rect") target->drawRect(x, y, w, h, rgb565_color(color));
+    else target->fillRect(x, y, w, h, rgb565_color(color));
     return true;
   }
 
@@ -602,8 +616,8 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_round_rect";
       return false;
     }
-    if (op == "draw_round_rect") target->drawRoundRect(x, y, w, h, r, color);
-    else target->fillRoundRect(x, y, w, h, r, color);
+    if (op == "draw_round_rect") target->drawRoundRect(x, y, w, h, r, rgb565_color(color));
+    else target->fillRoundRect(x, y, w, h, r, rgb565_color(color));
     return true;
   }
 
@@ -613,8 +627,8 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_circle";
       return false;
     }
-    if (op == "draw_circle") target->drawCircle(x, y, r, color);
-    else target->fillCircle(x, y, r, color);
+    if (op == "draw_circle") target->drawCircle(x, y, r, rgb565_color(color));
+    else target->fillCircle(x, y, r, rgb565_color(color));
     return true;
   }
 
@@ -626,8 +640,8 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_triangle";
       return false;
     }
-    if (op == "draw_triangle") target->drawTriangle(x, y, x1, y1, x2, y2, color);
-    else target->fillTriangle(x, y, x1, y1, x2, y2, color);
+    if (op == "draw_triangle") target->drawTriangle(x, y, x1, y1, x2, y2, rgb565_color(color));
+    else target->fillTriangle(x, y, x1, y1, x2, y2, rgb565_color(color));
     return true;
   }
 
@@ -675,7 +689,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
     for (int row = 0; row < h; ++row) {
       for (int col = 0; col < w; ++col) {
         uint8_t gray = pixels[static_cast<size_t>(row) * static_cast<size_t>(w) + static_cast<size_t>(col)];
-        target->drawPixel(x + col, y + row, rgb565_from_gray(gray));
+        target->drawPixel(x + col, y + row, rgb565_color(rgb565_from_gray(gray)));
       }
     }
     return true;
@@ -780,7 +794,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
 
   if (op == "set_text_color" && arity == 2) {
     if (!get_color(env, tuple[1], &color)) { *error_reason = "invalid_text_color"; return false; }
-    target->setTextColor(color);
+    target->setTextColor(rgb888_color(color));
     return true;
   }
 
@@ -789,7 +803,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       *error_reason = "invalid_text_color";
       return false;
     }
-    target->setTextColor(color, bg_color);
+    target->setTextColor(rgb888_color(color), rgb888_color(bg_color));
     return true;
   }
 

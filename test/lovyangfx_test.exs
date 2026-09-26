@@ -89,7 +89,6 @@ defmodule LovyanGFXTest do
              LovyanGFX.render([{:fill_screen, :not_a_color}])
   end
 
-
   test "render/1 preserves image file commands for backend handling" do
     path = Path.join(System.tmp_dir!(), "lovyangfx_render_test.png")
 

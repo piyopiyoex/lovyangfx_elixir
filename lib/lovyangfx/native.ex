@@ -9,8 +9,10 @@ defmodule LovyanGFX.Native do
   end
 
   def start(_width, _height, _framebuffer), do: :erlang.nif_error(:nif_not_loaded)
+
   def start(_width, _height, _framebuffer, _framebuffer_mode, _swap_bytes),
     do: :erlang.nif_error(:nif_not_loaded)
+
   def render(_commands), do: :erlang.nif_error(:nif_not_loaded)
   def width, do: :erlang.nif_error(:nif_not_loaded)
   def height, do: :erlang.nif_error(:nif_not_loaded)
@@ -20,6 +22,7 @@ defmodule LovyanGFX.Native do
 
   def moving_icons_start(_width, _height, _framebuffer, _framebuffer_mode, _swap_bytes),
     do: :erlang.nif_error(:nif_not_loaded)
+
   def moving_icons_timings, do: :erlang.nif_error(:nif_not_loaded)
   def moving_icons_set_status(_text), do: :erlang.nif_error(:nif_not_loaded)
   def moving_icons_set_touch(_text), do: :erlang.nif_error(:nif_not_loaded)

@@ -41,6 +41,15 @@ defmodule LovyanGFX.BufferedFramebufferTargetTest do
              ])
   end
 
+  test "preserves normalized RGB565 colors at the native boundary" do
+    assert LovyanGFX.start(@opts) in [:ok, :already_started]
+    assert :ok = LovyanGFX.render([{:fill_screen, {:rgb888, 0x00182F}}])
+
+    assert {:ok, framebuffer} = File.open(@opts[:framebuffer], [:read, :binary, :raw])
+    assert <<0xC5, 0x00>> = IO.binread(framebuffer, 2)
+    File.close(framebuffer)
+  end
+
   test "MovingIcons can stop and restart on the initialized buffered display" do
     assert LovyanGFX.Examples.MovingIcons.start(@opts) in [:ok, :already_started]
     Process.sleep(100)
