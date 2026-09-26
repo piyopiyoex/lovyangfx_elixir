@@ -78,6 +78,12 @@ defmodule LovyanGFXTest do
     assert :ok = LovyanGFX.render([{:draw_png_file, path, 12, 34}])
   end
 
+  test "MovingIcons.stop/0 delegates when the backend supports stop" do
+    expect(LovyanGFX.MockBackend, :moving_icons_stop, fn -> :ok end)
+
+    assert :ok = LovyanGFX.Examples.MovingIcons.stop()
+  end
+
   test "timings/0 delegates to the moving icons backend" do
     expect(LovyanGFX.MockBackend, :moving_icons_timings, fn -> 12.5 end)
 

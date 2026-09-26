@@ -726,6 +726,8 @@ static LGFX_Sprite sprites[2];
 static LGFX_Sprite icons[3];
 static int_fast16_t sprite_height;
 static std::atomic<bool> g_moving_icons_running{false};
+static std::thread g_moving_icons_thread;
+static std::mutex g_moving_icons_thread_mtx;
 
 static void moving_icons_setup() {
   ensure_lcd_init();
@@ -852,13 +854,26 @@ static void moving_icons_loop() {
   }
 }
 
-static void moving_icons_thread() {
+static void moving_icons_thread_main() {
   srand(12345);
   moving_icons_setup();
   g_anim_t = boot_seconds();
-  for (;;) {
+
+  while (g_moving_icons_running.load()) {
     moving_icons_loop();
     lgfx::delay(1);
+  }
+
+  lcd.endWrite();
+  for (auto& sprite : sprites) sprite.deleteSprite();
+  for (auto& icon : icons) icon.deleteSprite();
+}
+
+static void stop_moving_icons_thread() {
+  std::lock_guard<std::mutex> lk(g_moving_icons_thread_mtx);
+  g_moving_icons_running.store(false);
+  if (g_moving_icons_thread.joinable()) {
+    g_moving_icons_thread.join();
   }
 }
 
@@ -948,17 +963,28 @@ static ERL_NIF_TERM moving_icons_start_nif(ErlNifEnv* env, int argc, const ERL_N
     return enif_make_badarg(env);
   }
 
-  bool expected = false;
-  if (g_moving_icons_running.compare_exchange_strong(expected, true)) {
-    if (!g_lcd_inited.load()) {
-      set_display_target(width, height, framebuffer);
-    }
-
-    std::thread(moving_icons_thread).detach();
-    return ok(env);
+  std::lock_guard<std::mutex> lk(g_moving_icons_thread_mtx);
+  if (g_moving_icons_running.load()) {
+    return atom(env, "already_started");
   }
 
-  return atom(env, "already_started");
+  if (g_moving_icons_thread.joinable()) {
+    g_moving_icons_thread.join();
+  }
+
+  if (!g_lcd_inited.load()) {
+    set_display_target(width, height, framebuffer);
+  }
+
+  g_moving_icons_running.store(true);
+  g_moving_icons_thread = std::thread(moving_icons_thread_main);
+  return ok(env);
+}
+
+static ERL_NIF_TERM moving_icons_stop_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM[]) {
+  if (argc != 0) return enif_make_badarg(env);
+  stop_moving_icons_thread();
+  return ok(env);
 }
 
 static ERL_NIF_TERM timings_nif(ErlNifEnv* env, int, const ERL_NIF_TERM[]) {
@@ -988,16 +1014,21 @@ static ERL_NIF_TERM set_touch_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 
 static int load(ErlNifEnv*, void**, ERL_NIF_TERM) { return 0; }
 
+static void unload(ErlNifEnv*, void*) {
+  stop_moving_icons_thread();
+}
+
 static ErlNifFunc nif_funcs[] = {
   {"start", 3, start_nif},
-  {"render", 1, render_nif},
+  {"render", 1, render_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
   {"width", 0, width_nif},
   {"height", 0, height_nif},
   {"rotation", 0, rotation_nif},
   {"moving_icons_start", 3, moving_icons_start_nif},
   {"moving_icons_timings", 0, timings_nif},
   {"moving_icons_set_status", 1, set_status_nif},
-  {"moving_icons_set_touch", 1, set_touch_nif}
+  {"moving_icons_set_touch", 1, set_touch_nif},
+  {"moving_icons_stop", 0, moving_icons_stop_nif}
 };
 
-ERL_NIF_INIT(Elixir.LovyanGFX.Native, nif_funcs, load, NULL, NULL, NULL)
+ERL_NIF_INIT(Elixir.LovyanGFX.Native, nif_funcs, load, NULL, NULL, unload)

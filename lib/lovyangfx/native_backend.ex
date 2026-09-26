@@ -33,4 +33,7 @@ defmodule LovyanGFX.NativeBackend do
 
   @impl true
   def moving_icons_set_touch(text), do: LovyanGFX.Native.moving_icons_set_touch(text)
+
+  @impl true
+  def moving_icons_stop, do: LovyanGFX.Native.moving_icons_stop()
 end

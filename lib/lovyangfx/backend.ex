@@ -10,6 +10,9 @@ defmodule LovyanGFX.Backend do
   @callback moving_icons_timings() :: term()
   @callback moving_icons_set_status(String.t()) :: :ok | {:error, term()}
   @callback moving_icons_set_touch(String.t()) :: :ok | {:error, term()}
+  @callback moving_icons_stop() :: :ok | {:error, term()}
+
+  @optional_callbacks moving_icons_stop: 0
 
   def impl do
     Application.get_env(:lovyangfx_elixir, :backend, LovyanGFX.NativeBackend)

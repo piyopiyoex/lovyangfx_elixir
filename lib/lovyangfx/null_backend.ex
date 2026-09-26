@@ -98,6 +98,13 @@ defmodule LovyanGFX.NullBackend do
     :ok
   end
 
+  @impl true
+  def moving_icons_stop do
+    update_state(&Map.put(&1, :moving_icons_started?, false))
+    maybe_echo(:moving_icons_stop, :ok)
+    :ok
+  end
+
   @doc "Return the recorded null-backend state. Useful from local IEx."
   def state do
     Application.get_env(:lovyangfx_elixir, @state_key, @empty_state)

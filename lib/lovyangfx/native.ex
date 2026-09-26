@@ -18,4 +18,5 @@ defmodule LovyanGFX.Native do
   def moving_icons_timings, do: :erlang.nif_error(:nif_not_loaded)
   def moving_icons_set_status(_text), do: :erlang.nif_error(:nif_not_loaded)
   def moving_icons_set_touch(_text), do: :erlang.nif_error(:nif_not_loaded)
+  def moving_icons_stop, do: :erlang.nif_error(:nif_not_loaded)
 end

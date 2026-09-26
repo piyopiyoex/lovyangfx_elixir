@@ -13,6 +13,16 @@ defmodule LovyanGFX.Examples.MovingIcons do
     end
   end
 
+  def stop do
+    backend = LovyanGFX.Backend.impl()
+
+    if function_exported?(backend, :moving_icons_stop, 0) do
+      backend.moving_icons_stop()
+    else
+      :ok
+    end
+  end
+
   def timings, do: LovyanGFX.Backend.impl().moving_icons_timings()
 
   def set_status(text) when is_binary(text),

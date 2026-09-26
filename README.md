@@ -40,7 +40,7 @@ end
 LovyanGFX のソースは `c_src/vendor/lovyangfx` に取得して利用します。
 
 - upstream のソースツリーはこのリポジトリに commit しません
-- ディレクトリがなければビルド時に `1.2.24` を取得します
+- ディレクトリがなければビルド時に `1.2.29` を取得します
 - 意図的に更新したい場合は `scripts/update_lovyangfx` を使います
 
 ## 基本的な使い方
@@ -268,3 +268,7 @@ framebuffer が必要な smoke test:
 ```sh
 mix test --include framebuffer
 ```
+
+## 設計判断
+
+長期的な設計判断は [`docs/adr`](docs/adr/README.md) に記録しています。
