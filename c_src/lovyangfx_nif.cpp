@@ -23,6 +23,12 @@
 #include <memory>
 #include <unordered_map>
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <linux/fb.h>
+
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_fb panel_;
 
@@ -41,14 +47,28 @@ class LGFX : public lgfx::LGFX_Device {
 };
 
 // ---- shared display target --------------------------------------------------
+enum class FramebufferMode {
+  Direct,
+  BufferedRgb565,
+};
+
 static int g_screen_x = 800;
 static int g_screen_y = 480;
 static std::string g_device_name = "/dev/fb0";
+static FramebufferMode g_framebuffer_mode = FramebufferMode::Direct;
+static bool g_swap_bytes = false;
+
 static std::unique_ptr<LGFX> g_lcd;
-static std::atomic<bool> g_lcd_inited{false};
+static std::unique_ptr<LGFX_Sprite> g_frame_canvas;
+static std::atomic<bool> g_display_inited{false};
 static std::mutex g_lcd_mtx;
 
-#define lcd (*g_lcd)
+static int g_fb_fd = -1;
+static uint8_t* g_fb_mem = nullptr;
+static size_t g_fb_len = 0;
+static size_t g_fb_stride_bytes = 0;
+static unsigned int g_fb_xoffset = 0;
+static unsigned int g_fb_yoffset = 0;
 
 static std::unordered_map<std::string, std::unique_ptr<LGFX_Sprite>> g_sprites;
 static std::string g_current_target = "screen";
@@ -61,29 +81,200 @@ static LGFX_Sprite* sprite_by_name(const std::string& name) {
   return it->second.get();
 }
 
+static LovyanGFX* screen_target() {
+  if (g_framebuffer_mode == FramebufferMode::BufferedRgb565) {
+    return g_frame_canvas.get();
+  }
+  return g_lcd.get();
+}
+
 static LovyanGFX* current_render_target() {
-  if (g_current_target == "screen") return &lcd;
+  if (g_current_target == "screen") return screen_target();
   return sprite_by_name(g_current_target);
 }
 
-static bool ensure_lcd_init() {
-  bool expected = false;
-  if (!g_lcd_inited.compare_exchange_strong(expected, true)) return false;
+static void cleanup_framebuffer_mapping() {
+  if (g_fb_mem != nullptr) {
+    munmap(g_fb_mem, g_fb_len);
+    g_fb_mem = nullptr;
+  }
+  g_fb_len = 0;
+  g_fb_stride_bytes = 0;
+  g_fb_xoffset = 0;
+  g_fb_yoffset = 0;
 
+  if (g_fb_fd >= 0) {
+    close(g_fb_fd);
+    g_fb_fd = -1;
+  }
+}
+
+static void cleanup_display_locked() {
+  g_sprites.clear();
+
+  if (g_frame_canvas) {
+    g_frame_canvas->deleteSprite();
+    g_frame_canvas.reset();
+  }
+
+  g_lcd.reset();
+  cleanup_framebuffer_mapping();
+  g_current_target = "screen";
+  g_display_inited.store(false);
+}
+
+static bool init_direct_display() {
   g_lcd = std::make_unique<LGFX>(g_screen_x, g_screen_y, g_device_name.c_str());
-  lcd.init();
+  g_lcd->init();
 
-  if (lcd.width() < lcd.height()) {
-    lcd.setRotation(lcd.getRotation() ^ 1);
+  if (g_lcd->width() < g_lcd->height()) {
+    g_lcd->setRotation(g_lcd->getRotation() ^ 1);
   }
 
   return true;
 }
 
-static void set_display_target(unsigned int width, unsigned int height, ErlNifBinary framebuffer) {
+static bool init_buffered_rgb565_display() {
+  g_fb_fd = open(g_device_name.c_str(), O_RDWR);
+  if (g_fb_fd < 0) return false;
+
+  struct fb_fix_screeninfo fix = {};
+  struct fb_var_screeninfo var = {};
+  if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &fix) < 0 ||
+      ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &var) < 0) {
+    cleanup_framebuffer_mapping();
+    return false;
+  }
+
+  if (var.bits_per_pixel != 16 ||
+      var.xres < static_cast<unsigned int>(g_screen_x) ||
+      var.yres < static_cast<unsigned int>(g_screen_y) ||
+      var.xres_virtual < var.xoffset + static_cast<unsigned int>(g_screen_x) ||
+      var.yres_virtual < var.yoffset + static_cast<unsigned int>(g_screen_y)) {
+    cleanup_framebuffer_mapping();
+    return false;
+  }
+
+  const size_t row_end =
+      (static_cast<size_t>(var.xoffset) + static_cast<size_t>(g_screen_x)) * sizeof(uint16_t);
+  if (fix.line_length < row_end) {
+    cleanup_framebuffer_mapping();
+    return false;
+  }
+
+  g_fb_stride_bytes = fix.line_length;
+  g_fb_xoffset = var.xoffset;
+  g_fb_yoffset = var.yoffset;
+  g_fb_len = fix.smem_len != 0
+                 ? static_cast<size_t>(fix.smem_len)
+                 : static_cast<size_t>(fix.line_length) * static_cast<size_t>(var.yres_virtual);
+
+  const size_t required_len =
+      (static_cast<size_t>(g_fb_yoffset) + static_cast<size_t>(g_screen_y) - 1U) *
+          g_fb_stride_bytes +
+      (static_cast<size_t>(g_fb_xoffset) + static_cast<size_t>(g_screen_x)) * sizeof(uint16_t);
+  if (g_fb_len < required_len) {
+    cleanup_framebuffer_mapping();
+    return false;
+  }
+
+  void* mapped = mmap(nullptr, g_fb_len, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+  if (mapped == MAP_FAILED) {
+    cleanup_framebuffer_mapping();
+    return false;
+  }
+  g_fb_mem = static_cast<uint8_t*>(mapped);
+
+  g_frame_canvas = std::make_unique<LGFX_Sprite>();
+  g_frame_canvas->setColorDepth(16);
+  if (!g_frame_canvas->createSprite(g_screen_x, g_screen_y)) {
+    cleanup_display_locked();
+    return false;
+  }
+
+  return true;
+}
+
+static bool ensure_display_init() {
+  if (g_display_inited.load()) return true;
+
+  bool initialized = false;
+  if (g_framebuffer_mode == FramebufferMode::BufferedRgb565) {
+    initialized = init_buffered_rgb565_display();
+  } else {
+    initialized = init_direct_display();
+  }
+
+  if (!initialized) {
+    cleanup_display_locked();
+    return false;
+  }
+
+  g_display_inited.store(true);
+  return true;
+}
+
+static bool present_frame() {
+  if (g_framebuffer_mode == FramebufferMode::Direct) {
+    if (!g_lcd) return false;
+    g_lcd->display();
+    return true;
+  }
+
+  if (!g_frame_canvas || g_fb_mem == nullptr) return false;
+
+  const uint16_t* src = static_cast<const uint16_t*>(g_frame_canvas->getBuffer());
+  if (src == nullptr) return false;
+
+  for (int y = 0; y < g_screen_y; ++y) {
+    uint8_t* row = g_fb_mem +
+                   (static_cast<size_t>(g_fb_yoffset) + static_cast<size_t>(y)) * g_fb_stride_bytes +
+                   static_cast<size_t>(g_fb_xoffset) * sizeof(uint16_t);
+    const uint16_t* src_row = src + static_cast<size_t>(y) * static_cast<size_t>(g_screen_x);
+
+    if (!g_swap_bytes) {
+      memcpy(row, src_row, static_cast<size_t>(g_screen_x) * sizeof(uint16_t));
+      continue;
+    }
+
+    uint16_t* dst = reinterpret_cast<uint16_t*>(row);
+    for (int x = 0; x < g_screen_x; ++x) {
+      const uint16_t value = src_row[x];
+      dst[x] = static_cast<uint16_t>((value >> 8) | (value << 8));
+    }
+  }
+
+  return true;
+}
+
+static int screen_width() {
+  LovyanGFX* target = screen_target();
+  return target ? target->width() : 0;
+}
+
+static int screen_height() {
+  LovyanGFX* target = screen_target();
+  return target ? target->height() : 0;
+}
+
+static int screen_rotation() {
+  LovyanGFX* target = screen_target();
+  return target ? target->getRotation() : 0;
+}
+
+static int screen_color_depth() {
+  LovyanGFX* target = screen_target();
+  return target ? target->getColorDepth() : 16;
+}
+
+static void set_display_target(unsigned int width, unsigned int height, ErlNifBinary framebuffer,
+                               FramebufferMode framebuffer_mode = FramebufferMode::Direct,
+                               bool swap_bytes = false) {
   g_screen_x = static_cast<int>(width);
   g_screen_y = static_cast<int>(height);
   g_device_name.assign(reinterpret_cast<const char*>(framebuffer.data), framebuffer.size);
+  g_framebuffer_mode = framebuffer_mode;
+  g_swap_bytes = swap_bytes;
 }
 
 static ERL_NIF_TERM atom(ErlNifEnv* env, const char* name) {
@@ -232,7 +423,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
   const lgfx::IFont* font = nullptr;
 
   if (op == "create_sprite" && (arity == 4 || arity == 5)) {
-    int depth = lcd.getColorDepth();
+    int depth = screen_color_depth();
     if (!get_name(env, tuple[1], sprite_name) || sprite_name == "screen" ||
         !get_int_arg(env, tuple[2], &w) || !get_int_arg(env, tuple[3], &h)) {
       *error_reason = "invalid_create_sprite";
@@ -247,7 +438,12 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
       return false;
     }
 
-    auto sprite = std::make_unique<LGFX_Sprite>(&lcd);
+    std::unique_ptr<LGFX_Sprite> sprite;
+    if (g_framebuffer_mode == FramebufferMode::Direct) {
+      sprite = std::make_unique<LGFX_Sprite>(g_lcd.get());
+    } else {
+      sprite = std::make_unique<LGFX_Sprite>();
+    }
     sprite->setColorDepth(depth);
     if (!sprite->createSprite(w, h)) {
       *error_reason = "create_sprite_failed";
@@ -291,7 +487,9 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
     }
     LGFX_Sprite* sprite = sprite_by_name(sprite_name);
     if (sprite == nullptr) { *error_reason = "unknown_sprite"; return false; }
-    sprite->pushSprite(&lcd, x, y);
+    LovyanGFX* target = screen_target();
+    if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
+    sprite->pushSprite(target, x, y);
     return true;
   }
 
@@ -303,7 +501,9 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
     }
     LGFX_Sprite* sprite = sprite_by_name(sprite_name);
     if (sprite == nullptr) { *error_reason = "unknown_sprite"; return false; }
-    sprite->pushSprite(&lcd, x, y, color);
+    LovyanGFX* target = screen_target();
+    if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
+    sprite->pushSprite(target, x, y, color);
     return true;
   }
 
@@ -318,10 +518,14 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
     if (sprite == nullptr) { *error_reason = "unknown_sprite"; return false; }
     if (arity == 8) {
       if (!get_color(env, tuple[7], &color)) { *error_reason = "invalid_key_color"; return false; }
-      sprite->pushRotateZoom(&lcd, static_cast<float>(dst_x), static_cast<float>(dst_y),
+      LovyanGFX* target = screen_target();
+      if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
+      sprite->pushRotateZoom(target, static_cast<float>(dst_x), static_cast<float>(dst_y),
                              static_cast<float>(angle), static_cast<float>(zoom_x), static_cast<float>(zoom_y), color);
     } else {
-      sprite->pushRotateZoom(&lcd, static_cast<float>(dst_x), static_cast<float>(dst_y),
+      LovyanGFX* target = screen_target();
+      if (target == nullptr) { *error_reason = "display_not_initialized"; return false; }
+      sprite->pushRotateZoom(target, static_cast<float>(dst_x), static_cast<float>(dst_y),
                              static_cast<float>(angle), static_cast<float>(zoom_x), static_cast<float>(zoom_y));
     }
     return true;
@@ -542,6 +746,11 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
   if (op == "set_color_depth" && arity == 2) {
     int depth = 0;
     if (!get_int_arg(env, tuple[1], &depth)) { *error_reason = "invalid_color_depth"; return false; }
+    if (g_framebuffer_mode == FramebufferMode::BufferedRgb565 &&
+        g_current_target == "screen" && depth != 16) {
+      *error_reason = "unsupported_screen_color_depth";
+      return false;
+    }
     target->setColorDepth(depth);
     return true;
   }
@@ -669,7 +878,7 @@ static bool execute_command(ErlNifEnv* env, ERL_NIF_TERM command, const char** e
   }
 
   if (op == "display" && arity == 1) {
-    lcd.display();
+    if (!present_frame()) { *error_reason = "display_failed"; return false; }
     return true;
   }
 
@@ -691,8 +900,6 @@ static double boot_seconds() {
   clock_gettime(CLOCK_BOOTTIME, &ts);
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
-
-#define ICON_SWAP_BYTES false
 
 static constexpr unsigned short infoWidth = 32, infoHeight = 32;
 static constexpr unsigned short alertWidth = 32, alertHeight = 32;
@@ -729,10 +936,13 @@ static std::atomic<bool> g_moving_icons_running{false};
 static std::thread g_moving_icons_thread;
 static std::mutex g_moving_icons_thread_mtx;
 
-static void moving_icons_setup() {
-  ensure_lcd_init();
-  lcd_width = lcd.width();
-  lcd_height = lcd.height();
+static bool moving_icons_setup() {
+  LovyanGFX* target = screen_target();
+  if (target == nullptr) return false;
+
+  lcd_width = static_cast<uint32_t>(target->width());
+  lcd_height = static_cast<uint32_t>(target->height());
+  if (lcd_width == 0 || lcd_height == 0) return false;
 
   for (size_t i = 0; i < obj_count; ++i) {
     obj_info_t* a = &objects[i];
@@ -752,7 +962,7 @@ static void moving_icons_setup() {
     sprite_height = (lcd_height + div - 1) / div;
     bool fail = false;
     for (uint32_t i = 0; !fail && i < 2; ++i) {
-      sprites[i].setColorDepth(lcd.getColorDepth());
+      sprites[i].setColorDepth(screen_color_depth());
       sprites[i].setFont(&fonts::Font2);
       fail = !sprites[i].createSprite(lcd_width, sprite_height);
     }
@@ -764,14 +974,17 @@ static void moving_icons_setup() {
   icons[0].createSprite(infoWidth, infoHeight);
   icons[1].createSprite(alertWidth, alertHeight);
   icons[2].createSprite(closeWidth, closeHeight);
-  icons[0].setSwapBytes(ICON_SWAP_BYTES);
-  icons[1].setSwapBytes(ICON_SWAP_BYTES);
-  icons[2].setSwapBytes(ICON_SWAP_BYTES);
+
+  const bool icon_swap_bytes =
+      g_framebuffer_mode == FramebufferMode::BufferedRgb565 && g_swap_bytes;
+  icons[0].setSwapBytes(icon_swap_bytes);
+  icons[1].setSwapBytes(icon_swap_bytes);
+  icons[2].setSwapBytes(icon_swap_bytes);
   icons[0].pushImage(0, 0, infoWidth, infoHeight, info);
   icons[1].pushImage(0, 0, alertWidth, alertHeight, alert);
   icons[2].pushImage(0, 0, closeWidth, closeHeight, closeX);
 
-  lcd.startWrite();
+  return true;
 }
 
 static void draw_corner_text(LGFX_Sprite& spr, int band_y, const std::string& s,
@@ -814,7 +1027,13 @@ static void draw_touch(LGFX_Sprite& spr, int band_y) {
   draw_corner_text(spr, band_y, s, true, spr.color565(255, 230, 0));
 }
 
-static void moving_icons_loop() {
+static bool moving_icons_loop() {
+  std::lock_guard<std::mutex> display_lk(g_lcd_mtx);
+  LovyanGFX* target = screen_target();
+  if (target == nullptr) return false;
+
+  target->startWrite();
+
   static uint8_t flip = 0;
   for (size_t i = 0; i != obj_count; i++) objects[i].move();
 
@@ -841,9 +1060,14 @@ static void moving_icons_loop() {
     draw_status(sprites[flip], y);
     draw_touch(sprites[flip], y);
 
-    sprites[flip].pushSprite(&lcd, 0, y);
+    sprites[flip].pushSprite(target, 0, y);
   }
-  lcd.display();
+
+  if (!present_frame()) {
+    target->endWrite();
+    return false;
+  }
+  target->endWrite();
 
   ++frame_count;
   sec = lgfx::millis() / 1000;
@@ -852,19 +1076,26 @@ static void moving_icons_loop() {
     fps = frame_count;
     frame_count = 0;
   }
+
+  return true;
 }
 
 static void moving_icons_thread_main() {
   srand(12345);
-  moving_icons_setup();
+  if (!moving_icons_setup()) {
+    g_moving_icons_running.store(false);
+    return;
+  }
   g_anim_t = boot_seconds();
 
   while (g_moving_icons_running.load()) {
-    moving_icons_loop();
-    lgfx::delay(1);
+    if (!moving_icons_loop()) {
+      g_moving_icons_running.store(false);
+      break;
+    }
+    lgfx::delay(g_framebuffer_mode == FramebufferMode::BufferedRgb565 ? 16 : 1);
   }
 
-  lcd.endWrite();
   for (auto& sprite : sprites) sprite.deleteSprite();
   for (auto& icon : icons) icon.deleteSprite();
 }
@@ -878,28 +1109,80 @@ static void stop_moving_icons_thread() {
 }
 
 // ---- NIF glue ---------------------------------------------------------------
+static bool parse_framebuffer_mode(ErlNifEnv* env, ERL_NIF_TERM term, FramebufferMode* mode) {
+  std::string mode_name;
+  if (!get_atom_string(env, term, mode_name)) return false;
+
+  if (mode_name == "direct") {
+    *mode = FramebufferMode::Direct;
+    return true;
+  }
+
+  if (mode_name == "buffered_rgb565") {
+    *mode = FramebufferMode::BufferedRgb565;
+    return true;
+  }
+
+  return false;
+}
+
+static bool parse_bool(ErlNifEnv* env, ERL_NIF_TERM term, bool* value) {
+  std::string name;
+  if (!get_atom_string(env, term, name)) return false;
+
+  if (name == "true") {
+    *value = true;
+    return true;
+  }
+
+  if (name == "false") {
+    *value = false;
+    return true;
+  }
+
+  return false;
+}
+
 static bool parse_display_args(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[],
-                               unsigned int* width, unsigned int* height, ErlNifBinary* framebuffer) {
-  return argc == 3 &&
-         get_uint_arg(env, argv[0], width) &&
-         get_uint_arg(env, argv[1], height) &&
-         enif_inspect_binary(env, argv[2], framebuffer);
+                               unsigned int* width, unsigned int* height, ErlNifBinary* framebuffer,
+                               FramebufferMode* framebuffer_mode, bool* swap_bytes) {
+  if (argc != 3 && argc != 5) return false;
+  if (!get_uint_arg(env, argv[0], width) ||
+      !get_uint_arg(env, argv[1], height) ||
+      !enif_inspect_binary(env, argv[2], framebuffer)) {
+    return false;
+  }
+
+  *framebuffer_mode = FramebufferMode::Direct;
+  *swap_bytes = false;
+
+  if (argc == 5) {
+    if (!parse_framebuffer_mode(env, argv[3], framebuffer_mode) ||
+        !parse_bool(env, argv[4], swap_bytes)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 static ERL_NIF_TERM start_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   unsigned int width;
   unsigned int height;
   ErlNifBinary framebuffer;
+  FramebufferMode framebuffer_mode;
+  bool swap_bytes;
 
-  if (!parse_display_args(env, argc, argv, &width, &height, &framebuffer)) {
+  if (!parse_display_args(env, argc, argv, &width, &height, &framebuffer,
+                          &framebuffer_mode, &swap_bytes)) {
     return enif_make_badarg(env);
   }
 
   std::lock_guard<std::mutex> lk(g_lcd_mtx);
-  if (g_lcd_inited.load()) return atom(env, "already_started");
+  if (g_display_inited.load()) return atom(env, "already_started");
 
-  set_display_target(width, height, framebuffer);
-  ensure_lcd_init();
+  set_display_target(width, height, framebuffer, framebuffer_mode, swap_bytes);
+  if (!ensure_display_init()) return error(env, "framebuffer_init_failed");
   return ok(env);
 }
 
@@ -908,24 +1191,28 @@ static ERL_NIF_TERM render_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
   if (g_moving_icons_running.load()) return error(env, "moving_icons_running");
 
   std::lock_guard<std::mutex> lk(g_lcd_mtx);
-  ensure_lcd_init();
+  if (!ensure_display_init()) return error(env, "framebuffer_init_failed");
+
+  LovyanGFX* target = screen_target();
+  if (target == nullptr) return error(env, "display_not_initialized");
 
   ERL_NIF_TERM list = argv[0];
   ERL_NIF_TERM head;
   ERL_NIF_TERM tail;
 
   g_current_target = "screen";
-  lcd.startWrite();
+  target->startWrite();
   while (enif_get_list_cell(env, list, &head, &tail)) {
     const char* reason = nullptr;
     if (!execute_command(env, head, &reason)) {
-      lcd.endWrite();
+      target->endWrite();
       return error(env, reason ? reason : "render_failed");
     }
     list = tail;
   }
-  lcd.endWrite();
-  lcd.display();
+  target->endWrite();
+
+  if (!present_frame()) return error(env, "display_failed");
 
   return ok(env);
 }
@@ -934,36 +1221,39 @@ static ERL_NIF_TERM width_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM[]) {
   if (argc != 0) return enif_make_badarg(env);
 
   std::lock_guard<std::mutex> lk(g_lcd_mtx);
-  ensure_lcd_init();
-  return enif_make_int(env, lcd.width());
+  if (!ensure_display_init()) return enif_make_int(env, 0);
+  return enif_make_int(env, screen_width());
 }
 
 static ERL_NIF_TERM height_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM[]) {
   if (argc != 0) return enif_make_badarg(env);
 
   std::lock_guard<std::mutex> lk(g_lcd_mtx);
-  ensure_lcd_init();
-  return enif_make_int(env, lcd.height());
+  if (!ensure_display_init()) return enif_make_int(env, 0);
+  return enif_make_int(env, screen_height());
 }
 
 static ERL_NIF_TERM rotation_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM[]) {
   if (argc != 0) return enif_make_badarg(env);
 
   std::lock_guard<std::mutex> lk(g_lcd_mtx);
-  ensure_lcd_init();
-  return enif_make_int(env, lcd.getRotation());
+  if (!ensure_display_init()) return enif_make_int(env, 0);
+  return enif_make_int(env, screen_rotation());
 }
 
 static ERL_NIF_TERM moving_icons_start_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   unsigned int width;
   unsigned int height;
   ErlNifBinary framebuffer;
+  FramebufferMode framebuffer_mode;
+  bool swap_bytes;
 
-  if (!parse_display_args(env, argc, argv, &width, &height, &framebuffer)) {
+  if (!parse_display_args(env, argc, argv, &width, &height, &framebuffer,
+                          &framebuffer_mode, &swap_bytes)) {
     return enif_make_badarg(env);
   }
 
-  std::lock_guard<std::mutex> lk(g_moving_icons_thread_mtx);
+  std::lock_guard<std::mutex> thread_lk(g_moving_icons_thread_mtx);
   if (g_moving_icons_running.load()) {
     return atom(env, "already_started");
   }
@@ -972,11 +1262,15 @@ static ERL_NIF_TERM moving_icons_start_nif(ErlNifEnv* env, int argc, const ERL_N
     g_moving_icons_thread.join();
   }
 
-  if (!g_lcd_inited.load()) {
-    set_display_target(width, height, framebuffer);
+  {
+    std::lock_guard<std::mutex> display_lk(g_lcd_mtx);
+    if (!g_display_inited.load()) {
+      set_display_target(width, height, framebuffer, framebuffer_mode, swap_bytes);
+      if (!ensure_display_init()) return error(env, "framebuffer_init_failed");
+    }
+    g_moving_icons_running.store(true);
   }
 
-  g_moving_icons_running.store(true);
   g_moving_icons_thread = std::thread(moving_icons_thread_main);
   return ok(env);
 }
@@ -1016,15 +1310,19 @@ static int load(ErlNifEnv*, void**, ERL_NIF_TERM) { return 0; }
 
 static void unload(ErlNifEnv*, void*) {
   stop_moving_icons_thread();
+  std::lock_guard<std::mutex> lk(g_lcd_mtx);
+  cleanup_display_locked();
 }
 
 static ErlNifFunc nif_funcs[] = {
   {"start", 3, start_nif},
+  {"start", 5, start_nif},
   {"render", 1, render_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
   {"width", 0, width_nif},
   {"height", 0, height_nif},
   {"rotation", 0, rotation_nif},
   {"moving_icons_start", 3, moving_icons_start_nif},
+  {"moving_icons_start", 5, moving_icons_start_nif},
   {"moving_icons_timings", 0, timings_nif},
   {"moving_icons_set_status", 1, set_status_nif},
   {"moving_icons_set_touch", 1, set_touch_nif},

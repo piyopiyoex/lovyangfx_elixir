@@ -62,6 +62,24 @@ LovyanGFX.render([
 ])
 ```
 
+### buffered RGB565 framebuffer
+
+通常は既存の `Panel_fb` による直接描画を使います。framebuffer の stride や RGB565 の byte order の都合で full-frame buffer が必要な環境では、buffered mode を opt-in できます。
+
+```elixir
+LovyanGFX.start(
+  width: 854,
+  height: 480,
+  framebuffer: "/dev/fb0",
+  framebuffer_mode: :buffered_rgb565,
+  swap_bytes: true
+)
+```
+
+この mode では command を framebuffer と同サイズの `LGFX_Sprite` に描画し、`render/1` の最後に Linux framebuffer の `line_length` を考慮して full frame を転送します。`swap_bytes: true` の場合は転送時に RGB565 の 2 byte を入れ替えます。
+
+これらを指定しない既存の `start/1` は従来どおり `:direct` behavior のままです。display driver の読み込みや `/dev/fb0` の準備は引き続き consumer 側で行います。
+
 ## 画像コマンド
 
 既存の LovyanGFX 学習資料を参照しやすいように、画像コマンドは upstream に近い名前を使います。
@@ -268,6 +286,14 @@ framebuffer が必要な smoke test:
 ```sh
 mix test --include framebuffer
 ```
+
+buffered RGB565 mode を対象実機で確認する場合:
+
+```sh
+mix test --include target
+```
+
+`target` test の既定値は SHARP Brain PW-SH6 で検証している `854x480 / /dev/fb0 / byte swap` 構成です。
 
 ## 設計判断
 
