@@ -356,7 +356,8 @@ defmodule LovyanGFX.Command do
   defp validate_sprite_name(name) when is_atom(name) and name != :screen, do: :ok
 
   defp validate_sprite_name(name)
-       when is_binary(name) and byte_size(name) > 0 and name != "screen", do: :ok
+       when is_binary(name) and byte_size(name) > 0 and name != "screen",
+       do: :ok
 
   defp validate_sprite_name(name), do: {:error, {:invalid_sprite_name, name}}
 
